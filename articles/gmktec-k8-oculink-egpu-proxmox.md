@@ -3,7 +3,7 @@ title: "GMKTec K8 + OCuLink eGPU (RTX 5060 Ti) を Proxmox で動かすまで"
 emoji: "🖥️"
 type: "tech"
 topics: ["proxmox", "nvidia", "gpu", "oculink", "homelab"]
-published: false
+published: true
 ---
 
 ## はじめに
