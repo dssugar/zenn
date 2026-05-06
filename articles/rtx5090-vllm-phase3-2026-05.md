@@ -485,6 +485,64 @@ TRITON_ATTN が拒否) に対して **z-lab が Qwen 用 DFlash drafter (`z-lab/
 していることを HF 検索で発見。Qwen 27B は head_dim=256 uniform で本機 FA backend が動くため、
 Gemma 4 とは別軌道で起動条件が揃う可能性あり (本記事執筆時点で未試行、次セッション候補)。
 
+## 結果 12: dense モデルは DFlash drafter で激変 — Qwen 27B Text で +142%
+
+handoff-06 で「DFlash は Gemma 4 系の TRITON_ATTN forced 制約で本機詰み」と確定していましたが、
+**target を Qwen 系 (head_dim=256 uniform、本機 FA backend 動く) に変えれば動く**ことを Phase 5+ で実証。
+
+z-lab が公開している Qwen 用 DFlash drafter:
+- `z-lab/Qwen3.6-35B-A3B-DFlash` (gated=False、948 MB、8 layer)
+- `z-lab/Qwen3.6-27B-DFlash` (gated=auto、3.3 GiB、5 layer) = HF "Request access" 必要
+
+### Qwen MoE + z-lab DFlash drafter (起動成功、ただし MTP intrinsic にやや劣る)
+
+| spec_bench cat | DFlash tok/s | acc rate | acc len | vs MTP k=4 |
+|---|---|---|---|---|
+| qa | 261.5 | 49.0% | 2.96 | -4% (272.0 から) |
+| summ | 236.7 | 48.3% | 2.93 | -1% (239.5 から) |
+
+Qwen MoE は **MTP intrinsic (RedHatAI checkpoint 同梱) > DFlash drafter (z-lab 別 load)** で、
+intrinsic の一体感 + acceptance length 高 (k=4 で 3.49) が drafter 別 load の overhead を上回る。
+ただし handoff-06 の DFlash 構造的詰みを **Qwen MoE で初突破**したことが意味あり。
+
+### Qwen 27B Text + z-lab DFlash drafter (本機での Qwen 27B 速度上限大幅更新)
+
+unsloth Qwen 27B (vision tower 込み 28 GiB 占有 → drafter 3.3 GiB 乗らず詰み) は使えず、
+**`sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP`** (vision/audio 完全削除、18.3 GiB) に切り替えて DFlash drafter co-resident に成功:
+
+| spec_bench cat | tok/s | acc rate | acc len | per-position |
+|---|---|---|---|---|
+| **coding** | **132.76** | 61.97% | **3.48** | P0 85 / P1 67 / P2 52 / P3 43 |
+| qa | 126.04 | 49.02% | 2.96 | P0 75 / P1 53 / P2 39 / P3 29 |
+| summ | 126.97 | 54.28% | 3.17 | P0 82 / P1 60 / P2 44 / P3 32 |
+
+**vs Phase 4 Qwen 27B no spec (51-52 tok/s) = +142-160% 改善**、Qwen 27B の本機速度上限を大幅更新。
+
+ただし起動には HF cache の手動編集が必要でした (構造的なハマりポイント):
+
+1. sakamakismile snapshot dir に **`processor_config.json`** (unsloth から copy) +
+   `preprocessor_config.json` (生成) + `video_preprocessor_config.json` (生成) を配置
+2. vLLM の `MODEL` 引数は HF model_id ではなく **local snapshot path** を指定 (HF Hub API metadata 検証を回避)
+3. 理由: vLLM の `Qwen3_5ForConditionalGeneration` arch path は `Qwen3VLProcessor` を必須として load、
+   image/video processor サブコンポーネント必要。`language_model_only: true` config だけでは不十分
+
+これが 12 個目の発見:
+
+> **dense モデルは外付け drafter (DFlash / EAGLE-3) で大きく加速、MoE は intrinsic MTP で完結。
+> ただし NVFP4 派生選びと cache 手動編集が必要なケースあり。**
+
+### dense vs MoE × spec dec の整理 (本機実測)
+
+| target アーキ | 最適 spec dec | 効果 (本機 spec_bench qa) |
+|---|---|---|
+| **Qwen 27B Text (dense, hybrid SSM)** | **z-lab DFlash drafter** | **52 → 126 tok/s = +142%** |
+| Gemma 31B Turbo (dense) | RedHat EAGLE-3 drafter k=4 | 53 → 100 tok/s = +89% |
+| Qwen MoE (3B-A active) | **MTP intrinsic k=4** (checkpoint 同梱) | 240 → 272 tok/s = +13% |
+| Gemma MoE (4B-A active) | (現状 no spec) | DFlash z-lab/gemma-4-26B-A4B-it-DFlash 申請待ち |
+
+dense 系は外付け drafter で 90-140% 改善、MoE intrinsic は MTP head 学習済で十分高速化済 (+13%)、
+という **target アーキで spec dec の効果幅が大きく異なる**ことが本機実測で確認できました。
+
 ## 上流 PR 候補 (本記事で発見した 3 件)
 
 ### 1. vLLM 0.20.1 SpecBench クラスの self バグ
